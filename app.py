@@ -119,4 +119,5 @@ def admin_login():
 # 시작 시 DB 초기화
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
