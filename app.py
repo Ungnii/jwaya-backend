@@ -1,125 +1,140 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import sqlite3
 from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-DB_NAME = "reservations.db"
-ADMIN_ID = "Jwaya"
-ADMIN_PW = "jwaya1234"
+DATABASE = 'reservations.db'
 
-# DB 초기화
+PERIODS = ["1교시", "2교시", "3교시", "4교시", "5교시(점심)", "5교시", "6교시"]
+
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+    return db
+
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
+
 def init_db():
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute('''
+    with app.app_context():
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS reservations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                period TEXT NOT NULL,
-                room TEXT NOT NULL,
-                grade INTEGER,
-                class INTEGER,
+                date TEXT,
+                period TEXT,
+                room TEXT,
+                grade TEXT,
+                class TEXT,
                 password TEXT,
-                extra TEXT
+                detail TEXT
             )
         ''')
-        conn.commit()
+        db.commit()
 
-# 특정 주간의 월~금 날짜 리스트 생성
-def get_week_dates(date_str):
-    base = datetime.strptime(date_str, "%Y-%m-%d")
-    start = base - timedelta(days=base.weekday())  # 월요일
-    return [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(5)]
+def get_week_start(date_str):
+    date = datetime.strptime(date_str, "%Y-%m-%d")
+    start = date - timedelta(days=date.weekday())
+    return start.strftime("%Y-%m-%d")
 
-# ✅ 예약 등록
-@app.route('/api/reserve', methods=['POST'])
-def reserve():
-    data = request.json
-    date = data['date']
-    period = data['period']
-    room = data['room']
-    grade = data['grade']
-    classroom = data['class']
-    password = data['password']
-    extra = data.get('extra', '')
-
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute('''SELECT * FROM reservations WHERE date=? AND period=? AND room=?''',
-                  (date, period, room))
-        if c.fetchone():
-            return jsonify({"success": False, "message": "이미 예약된 시간대입니다."})
-
-        c.execute('''
-            INSERT INTO reservations (date, period, room, grade, class, password, extra)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (date, period, room, grade, classroom, password, extra))
-        conn.commit()
-        return jsonify({"success": True})
-
-# ✅ 주간 예약 조회
-@app.route('/api/reservations', methods=['GET'])
+@app.route("/api/reservations", methods=["GET"])
 def get_reservations():
-    week_date = request.args.get("week")
-    week_dates = get_week_dates(week_date)
+    week_start = request.args.get("week")
+    if not week_start:
+        return jsonify({"error": "Missing week parameter"}), 400
 
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute('''SELECT * FROM reservations WHERE date IN ({})'''.format(
-            ','.join('?' * len(week_dates))
-        ), week_dates)
-        rows = c.fetchall()
+    start_date = datetime.strptime(week_start, "%Y-%m-%d")
+    dates = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
-        reservations = []
-        for row in rows:
-            reservations.append({
-                "id": row[0],
-                "date": row[1],
-                "period": row[2],
-                "room": row[3],
-                "grade": row[4],
-                "class": row[5],
-                "extra": row[7]
-            })
-        return jsonify({"reservations": reservations})
+    db = get_db()
+    cursor = db.cursor()
 
-# ✅ 예약 삭제
-@app.route('/api/cancel', methods=['POST'])
-def cancel():
+    result = []
+    for date in dates:
+        day_data = {"date": date, "reservations": {}}
+        for period in PERIODS:
+            cursor.execute("SELECT room, grade, class, detail FROM reservations WHERE date = ? AND period = ?", (date, period))
+            day_data["reservations"][period] = [
+                {"room": row[0], "grade": row[1], "class": row[2], "detail": row[3]} for row in cursor.fetchall()
+            ]
+        result.append(day_data)
+
+    return jsonify(result)
+
+@app.route("/api/reservations", methods=["POST"])
+def make_reservation():
     data = request.json
-    res_id = data['id']
-    password = data['password']
-    is_admin = data.get('admin', False)
+    date = data["date"]
+    period = data["period"]
+    room = data["room"]
+    grade = data["grade"]
+    cls = data["class"]
+    password = data["password"]
+    detail = data.get("detail", "")
 
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute('SELECT password FROM reservations WHERE id=?', (res_id,))
-        row = c.fetchone()
-        if not row:
-            return jsonify({"success": False, "message": "존재하지 않는 예약입니다."})
+    db = get_db()
+    cursor = db.cursor()
 
-        if not is_admin and row[0] != password:
-            return jsonify({"success": False, "message": "비밀번호가 틀렸습니다."})
+    # ✅ 주간 예약 3회 제한 검사
+    week_start = get_week_start(date)
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    cursor.execute("""
+        SELECT COUNT(*) FROM reservations
+        WHERE room = ? AND grade = ? AND class = ?
+          AND date BETWEEN ? AND ?
+    """, (room, grade, cls, week_start, week_end))
+    count = cursor.fetchone()[0]
+    if count >= 3:
+        return jsonify({"success": False, "message": "같은 특별실은 주 3회 이상 예약할 수 없습니다."})
 
-        c.execute('DELETE FROM reservations WHERE id=?', (res_id,))
-        conn.commit()
-        return jsonify({"success": True})
+    # ✅ 중복 예약 방지
+    cursor.execute("SELECT * FROM reservations WHERE date = ? AND period = ? AND room = ?", (date, period, room))
+    if cursor.fetchone():
+        return jsonify({"success": False, "message": "이미 예약된 시간대입니다."})
 
-# ✅ 관리자 로그인
-@app.route('/api/admin/login', methods=['POST'])
-def admin_login():
+    cursor.execute(
+        "INSERT INTO reservations (date, period, room, grade, class, password, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (date, period, room, grade, cls, password, detail)
+    )
+    db.commit()
+
+    return jsonify({"success": True})
+
+@app.route("/api/reservations/delete", methods=["POST"])
+def delete_reservation():
     data = request.json
-    if data['id'] == ADMIN_ID and data['password'] == ADMIN_PW:
-        return jsonify({"success": True})
-    return jsonify({"success": False})
+    date = data["date"]
+    period = data["period"]
+    room = data["room"]
+    grade = data.get("grade")
+    cls = data.get("class")
+    password = data["password"]
+    is_admin = data.get("is_admin", False)
 
-# 시작 시 DB 초기화
-import os
+    db = get_db()
+    cursor = db.cursor()
 
-if __name__ == '__main__':
+    if is_admin:
+        cursor.execute("DELETE FROM reservations WHERE date = ? AND period = ? AND room = ?", (date, period, room))
+    else:
+        cursor.execute(
+            "DELETE FROM reservations WHERE date = ? AND period = ? AND room = ? AND grade = ? AND class = ? AND password = ?",
+            (date, period, room, grade, cls, password)
+        )
+
+    db.commit()
+    return jsonify({"success": True})
+
+if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
