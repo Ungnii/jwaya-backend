@@ -117,6 +117,8 @@ def admin_login():
     return jsonify({"success": False})
 
 # 시작 시 DB 초기화
+import os
+
 if __name__ == '__main__':
     init_db()
     port = int(os.environ.get("PORT", 10000))
