@@ -109,7 +109,7 @@ def make_reservation():
 
     return jsonify({"success": True})
 
-@app.route("/api/reservations/delete", methods=["POST"])
+@app.route("/api/reservations", methods=["DELETE"])
 def delete_reservation():
     data = request.json
     date = data["date"]
@@ -118,13 +118,16 @@ def delete_reservation():
     grade = data.get("grade")
     cls = data.get("class")
     password = data["password"]
-    is_admin = data.get("is_admin", False)
+    is_admin = password == "admin_override"  # ✅ 이 방식으로 통일
 
     db = get_db()
     cursor = db.cursor()
 
     if is_admin:
-        cursor.execute("DELETE FROM reservations WHERE date = ? AND period = ? AND room = ?", (date, period, room))
+        cursor.execute(
+            "DELETE FROM reservations WHERE date = ? AND period = ? AND room = ?",
+            (date, period, room)
+        )
     else:
         cursor.execute(
             "DELETE FROM reservations WHERE date = ? AND period = ? AND room = ? AND grade = ? AND class = ? AND password = ?",
@@ -133,6 +136,7 @@ def delete_reservation():
 
     db.commit()
     return jsonify({"success": True})
+
 
 if __name__ == "__main__":
     init_db()
