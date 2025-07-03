@@ -16,7 +16,7 @@ from psycopg2.extras import RealDictCursor
 # ─────────────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://<copy-your-neon-string-here>?sslmode=require"
+    "postgresql://neondb_owner:npg_o1NuSfCm2Ukj@ep-quiet-cloud-a9urz30x-pooler.gwc.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
 )
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL 환경 변수가 필요합니다.")
