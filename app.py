@@ -194,6 +194,7 @@ def api_delete():
 
     conn = get_conn()
     cur = conn.cursor()
+
     if admin:
         cur.execute(
             "DELETE FROM reservations WHERE date = %s AND period = %s AND room = %s",
@@ -208,8 +209,15 @@ def api_delete():
             """,
             (date, period, room, grade, cls, password),
         )
+
+    deleted_rows = cur.rowcount          # ⭐️ 삭제된 행 수
     conn.commit()
-    return jsonify({"success": True})
+
+    if deleted_rows == 0:
+        # 삭제 안 됨 → 비밀번호 틀림 또는 이미 삭제
+        return jsonify({"success": False, "message": "비밀번호가 틀렸거나 예약이 없습니다."})
+    else:
+        return jsonify({"success": True})
 
 # ── 7. 실행 ────────────────────────────────────────────────────
 if __name__ == "__main__":
